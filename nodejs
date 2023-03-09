@@ -1,0 +1,103 @@
+const { google } = require('googleapis');
+const { OAuth2 } = google.auth;
+const gmail = google.gmail('v1');
+
+
+const oauth2Client = new OAuth2(
+  process.env.CLIENT_ID,
+  process.env.CLIENT_SECRET,
+  process.env.REDIRECT_URI
+);
+oauth2Client.setCredentials({
+  refresh_token: process.env.REFRESH_TOKEN,
+});
+
+
+const LABEL_NAME = 'Vacation Auto Reply';
+let labelId = null;
+
+
+async function getLabelId() {
+  const response = await gmail.users.labels.list({
+    auth: oauth2Client,
+    userId: 'me',
+  });
+  const labels = response.data.labels;
+  const matchingLabel = labels.find(label => label.name === LABEL_NAME);
+  if (matchingLabel) {
+    return matchingLabel.id;
+  } else {
+
+    const createResponse = await gmail.users.labels.create({
+      auth: oauth2Client,
+      userId: 'me',
+      requestBody: { name: LABEL_NAME },
+    });
+    return createResponse.data.id;
+  }
+}
+
+
+async function checkAndReply() {
+  try {
+    if (!labelId) {
+      labelId = await getLabelId();
+    }
+
+    const response = await gmail.users.messages.list({
+      auth: oauth2Client,
+      userId: 'me',
+      labelIds: ['INBOX'],
+    });
+    const messages = response.data.messages;
+    const messageIdsToReply = [];
+    for (const message of messages) {
+      const threadResponse = await gmail.users.threads.get({
+        auth: oauth2Client,
+        userId: 'me',
+        id: message.threadId,
+      });
+      const thread = threadResponse.data;
+      const messagesInThread = thread.messages;
+      const lastMessage = messagesInThread[messagesInThread.length - 1];
+      if (lastMessage.labelIds.includes(labelId)) {
+        // Already replied to this thread
+        continue;
+      }
+      if (lastMessage.from.emailAddress === 'your-email-address@gmail.com') {
+        // Don't reply to yourself
+        continue;
+      }
+      messageIdsToReply.push(message.id);
+    }
+
+    for (const messageId of messageIdsToReply) {
+      await gmail.users.messages.send({
+        auth: oauth2Client,
+        userId: 'me',
+        requestBody: {
+          threadId: messageId,
+          labelIds: [labelId],
+          message: {
+            raw: Buffer.from(
+              `To: ${lastMessage.from.emailAddress}\r\n` +
+              `Subject: Vacation auto-reply\r\n` +
+              `\r\n` +
+              `Thank you for your email. I am currently out of office and will not be able to respond until my return on MM/DD/YYYY.\r\n` +
+              `Best regards,\r\n` +
+              `Your Name`
+            ).toString('base64'),
+          },
+        },
+      });
+    }
+  } catch (error) {
+    console.error(error);
+  } finally {
+  
+    const interval = Math.floor(Math.random() * (120 - 45 + 1)) + 45;
+    setTimeout(checkAndReply, interval * 1000);
+  }
+}
+
+//
